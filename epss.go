@@ -16,14 +16,6 @@ const (
 	epssDataURL           = "https://epss.cyentia.com/epss_scores-current.csv.gz"
 )
 
-type EPSSError struct {
-	message string
-}
-
-func (e *EPSSError) Error() string {
-	return e.message
-}
-
 type HttpClient interface {
 	Get(url string) (*http.Response, error)
 }
@@ -35,68 +27,93 @@ type Score struct {
 }
 
 type Client struct {
-	scores         []*Score
+	scores         map[string]*Score
 	lastUpdated    time.Time
 	updateInterval time.Duration
-	mu             sync.Mutex
+	mu             sync.RWMutex
 	httpClient     HttpClient
-	DataURL        string
+	dataURL        string
 }
 
-// Initializes a new EPSS client
-func NewClient() *Client {
+var sharedHttpClient = &http.Client{
+	Timeout: 10 * time.Second,
+}
+
+type ClientOption func(*Client)
+
+// WithUpdateInterval sets the update interval for the client.
+func WithUpdateInterval(updateInterval time.Duration) ClientOption {
+	return func(c *Client) {
+		if updateInterval < 0 {
+			updateInterval = defaultUpdateInterval
+		}
+		c.updateInterval = updateInterval
+	}
+}
+
+// WithDataURL sets the data URL for the client.
+func WithDataURL(dataURL string) ClientOption {
+	return func(c *Client) {
+		c.dataURL = dataURL
+	}
+}
+
+// WithHTTPClient sets the HTTP client for the client.
+func WithHTTPClient(httpClient HttpClient) ClientOption {
+	return func(c *Client) {
+		c.httpClient = httpClient
+	}
+}
+
+// NewClient creates a new EPSS client with the given options.
+func NewClient(options ...ClientOption) *Client {
 	client := &Client{
 		updateInterval: defaultUpdateInterval,
-		DataURL:        epssDataURL,
-		httpClient: &http.Client{
-			Timeout: 10 * time.Second,
-		},
+		dataURL:        epssDataURL,
+		httpClient:     sharedHttpClient,
+		scores:         make(map[string]*Score),
 	}
 
+	for _, option := range options {
+		option(client)
+	}
+
+	client.updateScores()
 	return client
 }
 
-// Used for getting last update time of client data
+// GetLastUpdated returns the last updated time of the scores.
 func (c *Client) GetLastUpdated() time.Time {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	return c.lastUpdated
 }
 
-// Sets user preferred HttpClient as EPSS HttpClient.
-func (c *Client) SetHttpClient(httpClient HttpClient) {
-	c.httpClient = httpClient
+// GetUpdateInterval returns the update interval of the scores.
+func (c *Client) GetUpdateInterval() time.Duration {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.updateInterval
 }
 
-// Sets Data URL for fetching the scores. Default: "https://epss.cyentia.com/epss_scores-current.csv.gz"
-func (c *Client) SetDataURL(url string) {
-	c.DataURL = epssDataURL
-}
-
-// Sets update interval for updating EPSS scores.
-func (c *Client) SetUpdateInterval(updateInterval time.Duration) {
-	if updateInterval < 0 {
-		updateInterval = defaultUpdateInterval
-	}
-
-	c.updateInterval = updateInterval
-}
-
+// updateScores updates the scores from the data source.
 func (c *Client) updateScores() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	resp, err := c.httpClient.Get(c.DataURL)
-	if err != nil {
-		return &EPSSError{message: fmt.Sprintf("Failed to download EPSS scores: %s", err)}
+	resp, err := c.httpClient.Get(c.dataURL)
+	if err != nil || resp.StatusCode != http.StatusOK || resp.Body == nil {
+		return fmt.Errorf("failed to download EPSS scores: %w", err)
 	}
 	defer resp.Body.Close()
 
 	gz, err := gzip.NewReader(resp.Body)
 	if err != nil {
-		return &EPSSError{message: fmt.Sprintf("Failed to download EPSS scores: %s", err)}
+		return fmt.Errorf("failed to create gzip reader: %w", err)
 	}
 	defer gz.Close()
 
-	scores := make([]*Score, 0)
+	scores := make(map[string]*Score)
 
 	csvReader := csv.NewReader(gz)
 	csvReader.Comment = '#'
@@ -107,10 +124,10 @@ func (c *Client) updateScores() error {
 			break
 		}
 		if err != nil {
-			return &EPSSError{message: fmt.Sprintf("Error reading EPSS CSV: %s", err)}
+			return fmt.Errorf("error reading EPSS CSV: %w", err)
 		}
 		if len(record) != 3 {
-			return &EPSSError{message: fmt.Sprintf("Number of fields do not match expected number: %s", record)}
+			return fmt.Errorf("number of fields do not match expected number")
 		}
 
 		epssValue, err := convertToFloat32(record[1])
@@ -122,55 +139,64 @@ func (c *Client) updateScores() error {
 			continue
 		}
 
-		scores = append(scores, &Score{
+		scores[record[0]] = &Score{
 			CVE:        record[0],
 			EPSS:       epssValue,
 			Percentile: percentileValue,
-		})
+		}
 	}
 
 	c.scores = scores
 	c.lastUpdated = time.Now()
-
 	return nil
 }
 
-func (c *Client) checkForUpdate() error {
-	if time.Since(c.lastUpdated) > c.updateInterval {
-		err := c.updateScores()
-		if err != nil {
-			return err
-		}
-	}
-	return nil
+// needsUpdate returns whether the scores need to be updated
+func (c *Client) needsUpdate() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return time.Since(c.lastUpdated) >= c.updateInterval
 }
 
-// Returns all EPSS Scores.
+// GetAllScores returns all the scores.
 func (c *Client) GetAllScores() ([]*Score, error) {
-	err := c.checkForUpdate()
-	if err != nil {
-		return nil, &EPSSError{message: fmt.Sprintf("Failed to update EPSS scores: %s", err)}
-	}
-
-	return c.scores, nil
-}
-
-// Returns individual Score by CVE ID.
-func (c *Client) GetScore(cve string) (*Score, error) {
-	err := c.checkForUpdate()
-	if err != nil {
-		return nil, &EPSSError{message: fmt.Sprintf("Failed to update EPSS scores: %s", err)}
-	}
-
-	for _, score := range c.scores {
-		if score.CVE == cve {
-			return score, nil
+	if c.needsUpdate() {
+		if err := c.updateScores(); err != nil {
+			return nil, err
 		}
 	}
 
-	return &Score{}, nil
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	scores := make([]*Score, 0, len(c.scores))
+	for _, score := range c.scores {
+		scores = append(scores, score)
+	}
+
+	return scores, nil
 }
 
+// GetScore returns the score for the given CVE.
+func (c *Client) GetScore(cve string) (*Score, error) {
+	if c.needsUpdate() {
+		if err := c.updateScores(); err != nil {
+			return nil, err
+		}
+	}
+
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	score, ok := c.scores[cve]
+	if !ok {
+		return nil, fmt.Errorf("Score not found for CVE: %s", cve)
+	}
+
+	return score, nil
+}
+
+// convertToFloat32 converts a string to a float32 value.
 func convertToFloat32(value string) (float32, error) {
 	parsedValue, err := strconv.ParseFloat(value, 32)
 	if err != nil {

@@ -14,14 +14,15 @@ EPSS (Exploit Prediction Scoring System) is a framework used to assess the likel
 * Local EPSS querying interface instead of [FIRST remote API](https://www.first.org/epss/api);
 * Access individual CVE scores;
 * Manage update intervals to ensure fresh data;
-* Leverages Golang's concurrency features for efficient performance.
+* Leverages Golang's concurrency features for efficient performance;
+* Custom `*http.Client` can be injected.
 
 # Getting Started
 1. Install `Go-EPSS` package:
     ```bash
     go get github.com/KaanSK/go-epss
     ```
-2. Import the package and create a client:
+2. Import the package and create a client with default values:
     ```go
     import (
         "github.com/KaanSK/go-epss"
@@ -30,7 +31,20 @@ EPSS (Exploit Prediction Scoring System) is a framework used to assess the likel
     client := epss.NewClient()
     ...
     ```
-# Getting All Score List
+
+## Providing Client Options and Custom `*http.Client`
+```go
+    import (
+        "github.com/KaanSK/go-epss"
+    )
+
+	client := epss.NewClient(
+		epss.WithHTTPClient(&http.Client{Timeout: 10 * time.Second,}),
+		epss.WithDataURL("test.com"),
+		epss.WithUpdateInterval(10 * time.Minute),
+		)
+```
+## Getting All Score List
 Use the client to retrieve scores:
 ```go
     scores, err := client.GetAllScores()
@@ -44,7 +58,7 @@ Use the client to retrieve scores:
     ...
 ```
 
-# Getting Individual Score for CVE ID
+## Getting Individual Score for CVE ID
 Use the client to retrieve individual CVE score:
 ```go
     score, err := client.GetScore("CVE-1999-0002")
@@ -56,30 +70,15 @@ Use the client to retrieve individual CVE score:
     ...
 ```
 
-# Injecting Custom `http.Client` for Data Fetching
-Use the client `SetHttpClient` method to inject custom `http.Client`:
+# Test & Benchmarks
+To run tests only:
 ```go
-    import (
-        "github.com/KaanSK/go-epss"
-    )
-
-    client := epss.NewClient()
-    client.SetHttpClient(&http.Client{
-		Timeout: 10 * time.Second,
-	})
-    ...
+go test -v -run Test
 ```
 
-# Setting Custom Update Interval
-Use the client `SetUpdateInterval` method to set new UpdateInterval (default is 24 hours):
+To run benchmarks only (will fetch remote data):
 ```go
-    import (
-        "github.com/KaanSK/go-epss"
-    )
-
-    client := epss.NewClient()
-    client.SetUpdateInterval(30 * time.Second)
-    ...
+go test -bench=.
 ```
 
 # Disclaimer
