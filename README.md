@@ -34,40 +34,40 @@ EPSS (Exploit Prediction Scoring System) is a framework used to assess the likel
 
 ## Providing Client Options and Custom `*http.Client`
 ```go
-    import (
-        "github.com/KaanSK/go-epss"
-    )
+import (
+    "github.com/KaanSK/go-epss"
+)
 
-	client := epss.NewClient(
-		epss.WithHTTPClient(&http.Client{Timeout: 10 * time.Second,}),
-		epss.WithDataURL("test.com"),
-		epss.WithUpdateInterval(10 * time.Minute),
-		)
+client := epss.NewClient(
+    epss.WithHTTPClient(&http.Client{Timeout: 10 * time.Second,}),
+    epss.WithDataURL("test.com"),
+    epss.WithUpdateInterval(10 * time.Minute),
+)
 ```
 ## Getting All Score List
 Use the client to retrieve scores:
 ```go
-    scores, err := client.GetAllScores()
-    if err != nil {
-        // Handle error
-    }
+scores, err := client.GetAllScores()
+if err != nil {
+    // Handle error
+}
 
-    for _, score := range scores {
-        fmt.Printf("CVE: %s, EPSS: %.4f, Percentile: %.4f\n", score.CVE, score.EPSS, score.Percentile)
-    }
-    ...
+for _, score := range scores {
+    fmt.Printf("CVE: %s, EPSS: %.4f, Percentile: %.4f\n", score.CVE, score.EPSS, score.Percentile)
+}
+...
 ```
 
 ## Getting Individual Score for CVE ID
 Use the client to retrieve individual CVE score:
 ```go
-    score, err := client.GetScore("CVE-1999-0002")
-    if err != nil {
-        // Handle error
-    }
+score, err := client.GetScore("CVE-1999-0002")
+if err != nil {
+    // Handle error
+}
 
-    fmt.Printf("CVE: %s, EPSS: %.4f, Percentile: %.4f\n", score.CVE, score.EPSS, score.Percentile)
-    ...
+fmt.Printf("CVE: %s, EPSS: %.4f, Percentile: %.4f\n", score.CVE, score.EPSS, score.Percentile)
+...
 ```
 
 # Test & Benchmarks
