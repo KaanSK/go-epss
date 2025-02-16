@@ -81,9 +81,6 @@ func (epssClient *Client) updateScores() error {
 		return fmt.Errorf("failed to create request: %v", err)
 	}
 
-	// TODO: remove this
-	req.Header.Add("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36")
-
 	resp, err := epssClient.HttpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("failed to send request: %v", err)
