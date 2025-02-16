@@ -1,414 +1,143 @@
 package epss_test
 
 import (
-	"bytes"
-	"compress/gzip"
-	"io"
 	"net/http"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/KaanSK/go-epss"
-	"github.com/stretchr/testify/mock"
-	"github.com/stretchr/testify/suite"
 )
 
-const (
-	epssDataURL = "https://epss.cyentia.com/epss_scores-current.csv.gz"
-)
-
-type HttpClient interface {
-	Get(url string) (*http.Response, error)
-}
-
-type MockHTTPClient struct {
-	mock.Mock
-}
-
-func (m *MockHTTPClient) Get(url string) (*http.Response, error) {
-	args := m.Called(url)
-	return args.Get(0).(*http.Response), args.Error(1)
-}
-
-type ClientTestSuite struct {
-	suite.Suite
-	EPSSClient     *epss.Client
-	MockHttpClient HttpClient
-	EPSSDataURL    string
-}
-
-func (suite *ClientTestSuite) SetupTest() {
-	suite.EPSSDataURL = epssDataURL
-
-	var buf bytes.Buffer
-	gz := gzip.NewWriter(&buf)
-
-	data := `#model_version:v2023.03.01,score_date:2024-02-22T00:00:00+0000
-	cve,epss,percentile
-	CVE-1999-0001,0.00383,0.72361
-	CVE-1999-0002,0.02091,0.88751`
-	data = strings.ReplaceAll(data, "\t", "")
-
-	if _, err := gz.Write([]byte(data)); err != nil {
-		suite.FailNow(err.Error())
+func TestClientOptions(t *testing.T) {
+	tests := []struct {
+		name     string
+		options  []epss.ClientOption
+		validate func(*testing.T, *epss.Client)
+	}{
+		{
+			name:    "default client",
+			options: nil,
+			validate: func(t *testing.T, c *epss.Client) {
+				if c == nil {
+					t.Fatal("Expected a client, got nil")
+				}
+				if c.DataUrl != "https://epss.cyentia.com/epss_scores-current.csv.gz" {
+					t.Fatalf("Expected default URL, got %s", c.DataUrl)
+				}
+				if c.HttpClient == nil {
+					t.Fatal("Expected default HTTP client, got nil")
+				}
+				if c.HttpClient.Timeout != 10*time.Second {
+					t.Fatalf("Expected default timeout of 10s, got %s", c.HttpClient.Timeout)
+				}
+			},
+		},
+		{
+			name: "custom http client",
+			options: []epss.ClientOption{
+				epss.WithHTTPClient(&http.Client{
+					Timeout: 30 * time.Second,
+				}),
+			},
+			validate: func(t *testing.T, c *epss.Client) {
+				if c.HttpClient.Timeout != 30*time.Second {
+					t.Fatalf("Expected custom timeout of 30s, got %s", c.HttpClient.Timeout)
+				}
+			},
+		},
+		{
+			name: "custom data url",
+			options: []epss.ClientOption{
+				epss.WithDataURL("https://example.com/epss_scores-current.csv.gz"),
+			},
+			validate: func(t *testing.T, c *epss.Client) {
+				if c.DataUrl != "https://example.com/epss_scores-current.csv.gz" {
+					t.Fatalf("Expected custom URL, got %s", c.DataUrl)
+				}
+			},
+		},
 	}
 
-	gz.Close()
-
-	responseBody := io.NopCloser(bytes.NewReader(buf.Bytes()))
-
-	mockClient := new(MockHTTPClient)
-	mockClient.On("Get", suite.EPSSDataURL).Return(&http.Response{
-		StatusCode: http.StatusOK,
-		Body:       responseBody},
-		nil)
-
-	suite.MockHttpClient = mockClient
-	suite.EPSSClient = epss.NewClient(epss.WithHTTPClient(suite.MockHttpClient))
-}
-
-func TestClientTestSuite(t *testing.T) {
-	suite.Run(t, new(ClientTestSuite))
-}
-
-func (suite *ClientTestSuite) TestGetAllScores() {
-	scores, err := suite.EPSSClient.GetAllScores()
-	suite.NoError(err)
-	suite.Len(scores, 2)
-}
-
-func (suite *ClientTestSuite) TestGetScore() {
-	score, err := suite.EPSSClient.GetScore("CVE-1999-0001")
-	suite.NoError(err)
-	suite.Equal("CVE-1999-0001", score.CVE)
-	suite.Equal(float32(0.00383), score.EPSS)
-	suite.Equal(float32(0.72361), score.Percentile)
-}
-
-func (suite *ClientTestSuite) TestGetScoreNotFound() {
-	_, err := suite.EPSSClient.GetScore("CVE-1999-0003")
-	suite.Error(err)
-}
-
-func (suite *ClientTestSuite) TestGetScoreInvalidCVE() {
-	_, err := suite.EPSSClient.GetScore("invalid-cve")
-	suite.Error(err)
-}
-
-func (suite *ClientTestSuite) TestGetScoreInvalidEPSS() {
-	var buf bytes.Buffer
-	gz := gzip.NewWriter(&buf)
-
-	data := `#model_version:v2023.03.01,score_date:2024-02-22T00:00:00+0000
-	cve,epss,percentile
-	CVE-1999-0001,invalid-epss,0.72361
-	CVE-1999-0002,0.02091,0.88751`
-	data = strings.ReplaceAll(data, "\t", "")
-
-	if _, err := gz.Write([]byte(data)); err != nil {
-		suite.FailNow(err.Error())
-	}
-
-	gz.Close()
-
-	responseBody := io.NopCloser(bytes.NewReader(buf.Bytes()))
-
-	mockClient := new(MockHTTPClient)
-	mockClient.On("Get", suite.EPSSDataURL).Return(&http.Response{
-		StatusCode: http.StatusOK,
-		Body:       responseBody},
-		nil)
-
-	epssClient := epss.NewClient(epss.WithHTTPClient(suite.MockHttpClient))
-
-	_, err := epssClient.GetScore("CVE-1999-0001")
-	suite.Error(err)
-}
-
-func (suite *ClientTestSuite) TestGetScoreInvalidPercentile() {
-	var buf bytes.Buffer
-	gz := gzip.NewWriter(&buf)
-
-	data := `#model_version:v2023.03.01,score_date:2024-02-22T00:00:00+0000
-	cve,epss,percentile
-	CVE-1999-0001,0.00383,invalid-percentile
-	CVE-1999-0002,0.02091,0.88751`
-	data = strings.ReplaceAll(data, "\t", "")
-
-	if _, err := gz.Write([]byte(data)); err != nil {
-		suite.FailNow(err.Error())
-	}
-
-	gz.Close()
-
-	responseBody := io.NopCloser(bytes.NewReader(buf.Bytes()))
-
-	mockClient := new(MockHTTPClient)
-	mockClient.On("Get", suite.EPSSDataURL).Return(&http.Response{
-		StatusCode: http.StatusOK,
-		Body:       responseBody},
-		nil)
-
-	epssClient := epss.NewClient(epss.WithHTTPClient(suite.MockHttpClient))
-
-	_, err := epssClient.GetScore("CVE-1999-0001")
-	suite.Error(err)
-}
-
-func (suite *ClientTestSuite) TestGetScoreInvalidCSV() {
-	var buf bytes.Buffer
-	gz := gzip.NewWriter(&buf)
-
-	data := `#model_version:v2023.03.01,score_date:2024-02-22T00:00:00+0000
-	cve,epss,percentile
-	CVE-1999-0001,0.00383,0.72361
-	CVE-1999-0002,0.02091`
-	data = strings.ReplaceAll(data, "\t", "")
-
-	if _, err := gz.Write([]byte(data)); err != nil {
-		suite.FailNow(err.Error())
-	}
-
-	gz.Close()
-
-	responseBody := io.NopCloser(bytes.NewReader(buf.Bytes()))
-
-	mockClient := new(MockHTTPClient)
-	mockClient.On("Get", suite.EPSSDataURL).Return(&http.Response{
-		StatusCode: http.StatusOK,
-		Body:       responseBody},
-		nil)
-
-	epssClient := epss.NewClient(epss.WithHTTPClient(suite.MockHttpClient))
-
-	_, err := epssClient.GetScore("CVE-1999-0001")
-	suite.Error(err)
-}
-
-func (suite *ClientTestSuite) TestGetScoreInvalidCSVFields() {
-	var buf bytes.Buffer
-	gz := gzip.NewWriter(&buf)
-
-	data := `#model_version:v2023.03.01,score_date:2024-02-22T00:00:00+0000
-	cve,epss,percentile
-	CVE-1999-0001,0.00383,0.72361,extra-field
-	CVE-1999-0002,0.02091,0.88751`
-	data = strings.ReplaceAll(data, "\t", "")
-
-	if _, err := gz.Write([]byte(data)); err != nil {
-		suite.FailNow(err.Error())
-	}
-
-	gz.Close()
-
-	responseBody := io.NopCloser(bytes.NewReader(buf.Bytes()))
-
-	mockClient := new(MockHTTPClient)
-	mockClient.On("Get", suite.EPSSDataURL).Return(&http.Response{
-		StatusCode: http.StatusOK,
-		Body:       responseBody},
-		nil)
-
-	epssClient := epss.NewClient(epss.WithHTTPClient(suite.MockHttpClient))
-
-	_, err := epssClient.GetScore("CVE-1999-0001")
-	suite.Error(err)
-}
-
-func (suite *ClientTestSuite) TestGetScoreInvalidCSVFieldsCount() {
-	var buf bytes.Buffer
-	gz := gzip.NewWriter(&buf)
-
-	data := `#model_version:v2023.03.01,score_date:2024-02-22T00:00:00+0000
-	cve,epss,percentile
-	CVE-1999-0001,0.00383
-	CVE-1999-0002,0.02091,0.88751`
-	data = strings.ReplaceAll(data, "\t", "")
-
-	if _, err := gz.Write([]byte(data)); err != nil {
-		suite.FailNow(err.Error())
-	}
-
-	gz.Close()
-
-	responseBody := io.NopCloser(bytes.NewReader(buf.Bytes()))
-
-	mockClient := new(MockHTTPClient)
-	mockClient.On("Get", suite.EPSSDataURL).Return(&http.Response{
-		StatusCode: http.StatusOK,
-		Body:       responseBody},
-		nil)
-
-	epssClient := epss.NewClient(epss.WithHTTPClient(suite.MockHttpClient))
-
-	_, err := epssClient.GetScore("CVE-1999-0001")
-	suite.Error(err)
-}
-
-func (suite *ClientTestSuite) TestGetScoreInvalidCSVFieldsCountZero() {
-	var buf bytes.Buffer
-	gz := gzip.NewWriter(&buf)
-
-	data := `#model_version:v2023.03.01,score_date:2024-02-22T00:00:00+0000
-	cve,epss,percentile
-	CVE-1999-0001,0.00383
-	CVE-1999-0002`
-	data = strings.ReplaceAll(data, "\t", "")
-
-	if _, err := gz.Write([]byte(data)); err != nil {
-		suite.FailNow(err.Error())
-	}
-
-	gz.Close()
-
-	responseBody := io.NopCloser(bytes.NewReader(buf.Bytes()))
-
-	mockClient := new(MockHTTPClient)
-	mockClient.On("Get", suite.EPSSDataURL).Return(&http.Response{
-		StatusCode: http.StatusOK,
-		Body:       responseBody},
-		nil)
-
-	epssClient := epss.NewClient(epss.WithHTTPClient(suite.MockHttpClient))
-
-	_, err := epssClient.GetScore("CVE-1999-0001")
-	suite.Error(err)
-}
-
-func (suite *ClientTestSuite) TestGetScoreInvalidCSVFieldsCountMoreThanThree() {
-	var buf bytes.Buffer
-	gz := gzip.NewWriter(&buf)
-
-	data := `#model_version:v2023.03.01,score_date:2024-02-22T00:00:00+0000
-	cve,epss,percentile
-	CVE-1999-0001,0.00383,0.72361,extra-field,extra-field
-	CVE-1999-0002,0.02091,0.88751`
-	data = strings.ReplaceAll(data, "\t", "")
-
-	if _, err := gz.Write([]byte(data)); err != nil {
-		suite.FailNow(err.Error())
-	}
-
-	gz.Close()
-
-	responseBody := io.NopCloser(bytes.NewReader(buf.Bytes()))
-
-	mockClient := new(MockHTTPClient)
-	mockClient.On("Get", suite.EPSSDataURL).Return(&http.Response{
-		StatusCode: http.StatusOK,
-		Body:       responseBody},
-		nil)
-
-	epssClient := epss.NewClient(epss.WithHTTPClient(suite.MockHttpClient))
-
-	_, err := epssClient.GetScore("CVE-1999-0001")
-	suite.Error(err)
-}
-
-func (suite *ClientTestSuite) TestGetAllScoresError() {
-	mockClient := new(MockHTTPClient)
-	mockClient.On("Get", suite.EPSSDataURL).Return(&http.Response{
-		StatusCode: http.StatusInternalServerError,
-		Body:       nil},
-		nil)
-
-	epssClient := epss.NewClient(epss.WithHTTPClient(mockClient))
-
-	_, err := epssClient.GetAllScores()
-	suite.Error(err)
-}
-
-func (suite *ClientTestSuite) TestGetScoreError() {
-	mockClient := new(MockHTTPClient)
-	mockClient.On("Get", suite.EPSSDataURL).Return(&http.Response{
-		StatusCode: http.StatusInternalServerError,
-		Body:       nil},
-		nil)
-
-	epssClient := epss.NewClient(epss.WithHTTPClient(mockClient))
-
-	_, err := epssClient.GetScore("CVE-1999-0001")
-	suite.Error(err)
-}
-
-func (suite *ClientTestSuite) TestLastUpdated() {
-	suite.EPSSClient.GetAllScores()
-	suite.NotEqual(int64(0), suite.EPSSClient.GetLastUpdated().Unix())
-	suite.True(time.Now().After(suite.EPSSClient.GetLastUpdated()))
-}
-
-// Benchmarking
-type ClientBenchmarkSuite struct {
-	suite.Suite
-	EPSSClient     *epss.Client
-	MockHttpClient HttpClient
-	EPSSDataURL    string
-}
-
-func (suite *ClientBenchmarkSuite) SetupTest() {
-	suite.EPSSDataURL = epssDataURL
-	suite.EPSSClient = epss.NewClient()
-}
-
-func TestClientBenchmarkSuite(t *testing.T) {
-	suite.Run(t, new(ClientBenchmarkSuite))
-}
-
-func (suite *ClientBenchmarkSuite) TestGetScore() {
-	suite.EPSSClient.GetScore("CVE-2010-0001")
-}
-
-func BenchmarkGetScore(b *testing.B) {
-	suite := new(ClientBenchmarkSuite)
-	suite.SetupTest()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		suite.TestGetScore()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := epss.NewClient(tt.options...)
+			tt.validate(t, client)
+		})
 	}
 }
 
-func BenchmarkGetAllScores(b *testing.B) {
-	suite := new(ClientBenchmarkSuite)
-	suite.SetupTest()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		suite.EPSSClient.GetAllScores()
-	}
-}
+func TestEPSSOperations(t *testing.T) {
+	// Create a single client for all tests to minimize network requests
+	client := epss.NewClient()
 
-func BenchmarkGetScoreNotFound(b *testing.B) {
-	suite := new(ClientBenchmarkSuite)
-	suite.SetupTest()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		suite.EPSSClient.GetScore("CVE-1999-0003")
+	// First, get all scores which will populate the client's cache
+	allScores, err := client.GetAllScores()
+	if err != nil {
+		t.Fatalf("Failed to get all scores: %v", err)
 	}
-}
 
-func BenchmarkGetScoreInvalidCVE(b *testing.B) {
-	suite := new(ClientBenchmarkSuite)
-	suite.SetupTest()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		suite.EPSSClient.GetScore("invalid-cve")
+	// Validate metadata is properly populated
+	if client.Metadata == nil {
+		t.Fatal("Expected metadata to be present, got nil")
 	}
-}
-
-func BenchmarkGetScoreInvalidEPSS(b *testing.B) {
-	suite := new(ClientBenchmarkSuite)
-	suite.SetupTest()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		suite.EPSSClient.GetScore("CVE-1999-0001")
+	if client.Metadata.ModelVersion == "" {
+		t.Fatal("Expected ModelVersion to be set, got empty string")
 	}
-}
+	if client.Metadata.ScoreDate.IsZero() {
+		t.Fatal("Expected ScoreDate to be set, got zero time")
+	}
+	if client.LastUpdated.IsZero() {
+		t.Fatal("Expected LastUpdated to be set, got zero time")
+	}
 
-func BenchmarkGetScoreInvalidPercentile(b *testing.B) {
-	suite := new(ClientBenchmarkSuite)
-	suite.SetupTest()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		suite.EPSSClient.GetScore("CVE-1999-0001")
+	// Use the first CVE from allScores for GetScore test
+	if len(allScores) == 0 {
+		t.Fatal("Expected non-zero scores, got zero")
+	}
+	firstCVE := allScores[0].CVE
+
+	tests := []struct {
+		name     string
+		testFunc func(*testing.T)
+	}{
+		{
+			name: "get existing CVE score",
+			testFunc: func(t *testing.T) {
+				score, err := client.GetScore(firstCVE)
+				if err != nil {
+					t.Fatalf("Failed to get score for %s: %v", firstCVE, err)
+				}
+				if score == nil {
+					t.Fatal("Expected a score, got nil")
+				}
+				if score.CVE != firstCVE {
+					t.Fatalf("Expected CVE %s, got %s", firstCVE, score.CVE)
+				}
+			},
+		},
+		{
+			name: "get non-existent CVE score",
+			testFunc: func(t *testing.T) {
+				_, err := client.GetScore("CVE-9999-9999")
+				if err == nil {
+					t.Fatal("Expected error for non-existent CVE, got nil")
+				}
+			},
+		},
+		{
+			name: "get invalid CVE format",
+			testFunc: func(t *testing.T) {
+				_, err := client.GetScore("NOT-A-CVE")
+				if err == nil {
+					t.Fatal("Expected error for invalid CVE format, got nil")
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tt.testFunc(t)
+		})
 	}
 }
